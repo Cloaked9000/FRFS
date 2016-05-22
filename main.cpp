@@ -129,7 +129,7 @@ uint32_t allocateCluster()
         {
             //Mark found cluster as used
             disk[a] = CLUSTER_USED;
-            std::cout << "\nAllocated cluster: " << a << std::endl;
+
             //Return its index in the disk (bytes)
             return ((a * clusterSize) + clusterCount);
         }
@@ -143,6 +143,10 @@ uint32_t createObject(uint8_t type, uint32_t permissions, uint16_t nameLength, u
 {
     //Allocate a cluster for the object
     uint32_t cluster = allocateCluster();
+
+    //If we failed to allocate a new cluster, return 0
+    if(cluster == 0)
+        return 0;
 
     //Prepare cluster header for the new object
     ClusterHeader clusterHeader;
@@ -237,6 +241,13 @@ uint32_t extendCluster(uint32_t clusterIndex)
 
     //Set it's 'next' to a newly allocated cluster
     header->next = allocateCluster();
+
+    //If we failed to allocate a new cluster, return 0
+    if(header->next == 0)
+    {
+        delete header;
+        return 0;
+    }
 
     //Update the cluster on disk
     writeClusterHeader(clusterIndex, header);
@@ -359,6 +370,7 @@ void freeObject(uint32_t index)
         delete current;
         current = readClusterHeader(index);
     }
+    delete current;
 }
 
 
@@ -367,23 +379,21 @@ int main()
     //Install filesystem to ramdisk
     formatDisk();
 
-    uint8_t name[] = "root";
     uint8_t name2[] = "file";
-    uint32_t dir = createObject(NODE_DIRECTORY, 0, 4, name);
-    std::cout << "\nDir pos: " << dir << std::endl;
-    uint32_t file = createObject(NODE_FILE, 0, 4, name2);
-    uint8_t data[] = "Test data is test";
-    std::cout << "\nWriting data" << std::endl;
-    write(file, data, 17);
-    std::cout << "Wrote data" << std::endl;
-    uint8_t *d = read(file, 17);
-    std::cout << "Got: ";
-    for(uint32_t a = 0; a < 17; a++)
-        std::cout << d[a];
-    std::cout << std::endl;
 
-    freeObject(file);
-  //  freeObject(dir);
+    uint32_t fc = 0;
+    while(fc < clusterCount)
+    {
+        uint32_t file = createObject(NODE_FILE, 0, 4, name2);
+        if(file == 0)
+        {
+            std::cout << "\nOut of disk space!" << std::endl;
+            break;
+        }
+        std::cout << "\nAllocated: " << file << std::endl;
+        fc++;
+    }
+
     return 0;
 }
 
