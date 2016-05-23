@@ -40,11 +40,11 @@ struct ClusterHeader
     uint32_t next; //Index of next node in object
 };
 
-const uint32_t diskSize = 1048576000; //10MB
+const uint64_t diskSize = 8192000; //10MB
 const uint16_t clusterSize = 4096;
-const uint32_t clusterCount = (diskSize / clusterSize) - clusterCount;
+const uint32_t clusterCount = diskSize / clusterSize;
 static uint8_t disk[diskSize];
-uint32_t lastAllocationPosition = 0;
+uint32_t lastAllocationPosition = (clusterCount/clusterSize)+1;
 
 inline void write8(uint32_t index, uint32_t offset, uint8_t byte)
 {
@@ -88,37 +88,27 @@ inline uint32_t read32(uint32_t index, uint32_t offset)
 void writeClusterHeader(uint32_t index, ClusterHeader *header)
 {
     //Write cluster length
-    disk[index] = header->clusterLength;
-    disk[index + 1] = header->clusterLength >> 8;
-    disk[index + 2] = header->clusterLength >> 16;
-    disk[index + 3] = header->clusterLength >> 24;
+    write32(index, 0, header->clusterLength);
 
     //Write next
-    disk[index + 4] = header->next;
-    disk[index + 5] = header->next >> 8;
-    disk[index + 6] = header->next >> 16;
-    disk[index + 7] = header->next >> 24;
+    write32(index, 4, header->next);
 }
 
 //Writes a node header
 void writeNodeHeader(uint32_t index, NodeHeader *header)
 {
     //Write type
-    disk[index + 8] = header->type; //Skip over the cluster header
+    write8(index, 8, header->type); //Skip over the cluster header
 
     //Write permissions
-    disk[index + 9] = header->permissions;
-    disk[index + 10] = header->permissions >> 8;
-    disk[index + 11] = header->permissions >> 16;
-    disk[index + 12] = header->permissions >> 24;
+    write32(index, 9, header->permissions);
 
     //Write name length
-    disk[index + 13] = header->nameLength;
-    disk[index + 14] = header->nameLength >> 8;
+    write16(index, 13, header->nameLength);
 
     //Write the name itself
     for(uint16_t a = 0; a < header->nameLength; a++)
-        disk[index + 15 + a] = header->nameData[a];
+        write8(index, 15 + a, header->nameData[a]);
 }
 
 //Reads a cluster header
@@ -128,8 +118,8 @@ ClusterHeader *readClusterHeader(uint32_t index)
     ClusterHeader *header = new ClusterHeader;
 
     //Read data from disk into structure
-    header->clusterLength = intConcatL(disk[index], disk[index + 1], disk[index + 2], disk[index + 3]);
-    header->next = intConcatL(disk[index + 4], disk[index + 5], disk[index + 6], disk[index + 7]);
+    header->clusterLength = read32(index, 0);
+    header->next = read32(index, 4);
     return header;
 }
 
@@ -140,10 +130,12 @@ NodeHeader *readNodeHeader(uint32_t index)
     NodeHeader *header = new NodeHeader;
 
     //Read node header into structure
-    header->type = disk[index + 8]; //Skip over cluster header
-    header->permissions = intConcatL(disk[index + 9], disk[index + 10], disk[index + 11], disk[index + 12]);
-    header->nameLength = intConcat(disk[index + 13], disk[index + 14]);
-    header->nameData = &disk[index + 15];
+    header->type = read8(index, 8); //Skip over cluster header
+    header->permissions = read32(index, 9);
+    header->nameLength = read16(index, 13);
+    header->nameData = new uint8_t[256];
+    for(uint16_t a = 0; a < header->nameLength; a++)
+        header->nameData[a] = read8(index, 15 + a);
 
     return header;
 }
@@ -162,7 +154,7 @@ void formatDisk()
 uint32_t allocateCluster()
 {
     //Go through disk index to find a free one
-    for(uint32_t a = lastAllocationPosition; a < clusterCount-20; a++)
+    for(uint32_t a = lastAllocationPosition; a < clusterCount; a++)
     {
         if(disk[a] == CLUSTER_FREE)
         {
@@ -172,8 +164,8 @@ uint32_t allocateCluster()
             //Mark found cluster as used
             disk[a] = CLUSTER_USED;
 
-            //Return its index in the disk (bytes)
-            return ((a * clusterSize) + clusterCount);
+            //Return its cluster index in the disk
+            return a;
         }
     }
 
@@ -231,8 +223,7 @@ uint32_t getDirectoryFileObject(uint32_t directoryIndex, uint32_t fileIndex)
     else
     {
         //Get the file index of the directory and combine the bytes into a single uint32_t
-        uint32_t fileCluster = directoryIndex + 280 + (fileIndex * 4);
-        return intConcatL(disk[fileCluster], disk[fileCluster + 1], disk[fileCluster + 2], disk[fileCluster + 3]);
+        return read32(directoryIndex, 280 + (fileIndex * 4));
     }
     return 0;
 }
@@ -284,7 +275,7 @@ void addObjectToDirectory(uint32_t directoryIndex, uint32_t objectIndex)
             uint32_t newCluster = extendCluster(directoryIndex);
             addObjectToDirectory(newCluster, objectIndex);
         }
-        else //Else there's another section of the directory, add it to that instead
+        else //Else there's another section of the directory, add it to that instead and let it deal with allocation
         {
             addObjectToDirectory(directoryClusterHeader->next, objectIndex);
         }
@@ -292,11 +283,7 @@ void addObjectToDirectory(uint32_t directoryIndex, uint32_t objectIndex)
     else
     {
         //There's space remaining in this cluster so add the object in
-        uint32_t currentIndex = directoryIndex + directoryClusterHeader->clusterLength;
-        disk[currentIndex] = objectIndex;
-        disk[currentIndex + 1] = objectIndex >> 8;
-        disk[currentIndex + 2] = objectIndex >> 16;
-        disk[currentIndex + 3] = objectIndex >> 24;
+        write32(directoryIndex, directoryClusterHeader->clusterLength, objectIndex);
 
         //Update the cluster size on disk
         directoryClusterHeader->clusterLength += 4;
@@ -326,15 +313,15 @@ uint8_t removeObjectFromDirectory(uint32_t directoryIndex, uint32_t objectIndex)
         //Calculate name offset in current cluster
 
         //Set it to 0 in directory
-        uint32_t relativeObjectIndex = 280 + directoryIndex + (objectIndex*4);
+        uint32_t relativeObjectIndex = 280 + (objectIndex*4);
 
         //Shift all entries in the rest of the cluster down so as not to leave empty space in the cluster
         for(; relativeObjectIndex < (directoryIndex + clusterSize); relativeObjectIndex+=4)
         {
-            disk[relativeObjectIndex] = disk[relativeObjectIndex + 4];
-            disk[relativeObjectIndex+1] = disk[relativeObjectIndex + 5];
-            disk[relativeObjectIndex+2] = disk[relativeObjectIndex + 6];
-            disk[relativeObjectIndex+3] = disk[relativeObjectIndex + 7];
+            write8(directoryIndex, relativeObjectIndex, read8(directoryIndex, relativeObjectIndex + 4));
+            write8(directoryIndex, relativeObjectIndex + 1, read8(directoryIndex, relativeObjectIndex + 5));
+            write8(directoryIndex, relativeObjectIndex + 2, read8(directoryIndex, relativeObjectIndex + 6));
+            write8(directoryIndex, relativeObjectIndex + 3, read8(directoryIndex, relativeObjectIndex + 7));
         }
 
         //Reduce header size and update on disk
@@ -436,7 +423,7 @@ void write(uint32_t clusterIndex, uint8_t *data, uint32_t dataLength)
         }
 
         //Write data to disk
-        disk[clusterIndex + cluster->clusterLength++] = data[a];
+        write8(clusterIndex, cluster->clusterLength++, data[a]);
     }
 
     //Update the cluster we've written to with its new size
@@ -460,7 +447,7 @@ uint8_t *read(uint32_t clusterIndex, uint32_t length)
         //Read from cluster until either we've read enough bytes or we've finished this cluster
         for(uint32_t a = 280; a < cluster->clusterLength && bufferOffset < length; a++)
         {
-            buffer[bufferOffset++] = disk[clusterIndex + a];
+            buffer[bufferOffset++] = read8(clusterIndex, a);
         }
 
         //If we've finished this cluster and still haven't read enough bytes, get the next cluster
@@ -490,7 +477,7 @@ void freeObject(uint32_t index)
     while(true) //Keep going until we run out of connected headers
     {
         //Mark cluster space as free
-        disk[index / clusterSize] = CLUSTER_FREE;
+        disk[index] = CLUSTER_FREE;
 
         if(current->next == 0)
         {
@@ -558,7 +545,7 @@ int main()
     uint8_t rootName[] = "root";
     uint32_t rootDirectory = createObject(NODE_DIRECTORY, 0, 4, rootName);
     uint32_t currentDirectory = rootDirectory;
-    for(uint32_t a = 0; a < 5; a++)
+    for(uint32_t a = 0; a < 1996; a++)
     {
         std::string args = "dir" + std::to_string(a);
         uint32_t newObject = createObject(NODE_DIRECTORY, 0, args.size(), (uint8_t*)&args[0]);
