@@ -3,7 +3,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <limits>
-#include <vector>
 enum NodeType
 {
     NODE_FILE = 0x0,
@@ -245,8 +244,6 @@ void addObjectToDirectory(uint32_t directoryIndex, uint32_t objectIndex)
         if(directoryClusterHeader->next == 0)
         {
             uint32_t newCluster = extendCluster(directoryIndex);
-            directoryClusterHeader->next = newCluster;
-            writeClusterHeader(directoryIndex, directoryClusterHeader);
             addObjectToDirectory(newCluster, objectIndex);
         }
         else //Else there's another section of the directory, add it to that instead
@@ -321,11 +318,11 @@ uint32_t getDirectorySize(uint32_t index)
 
     //Fetch the directories' cluster header
     ClusterHeader *directoryClusterHeader = readClusterHeader(index);
-    if(directoryClusterHeader->clusterLength == clusterSize)
+
+    //If there's a next cluster, recursively scan that too
+    if(directoryClusterHeader->next != 0)
     {
-        //If there's a next cluster, recursively scan that too
-        if(directoryClusterHeader->next != 0)
-            objectCount += getDirectorySize(directoryClusterHeader->next);
+        objectCount += getDirectorySize(directoryClusterHeader->next);
     }
 
     //Add in the number of objects to the total
@@ -344,11 +341,11 @@ uint32_t getFileSize(uint32_t index)
 
     //Fetch the files cluster header
     ClusterHeader *fileClusterHeader = readClusterHeader(index);
-    if(fileClusterHeader->clusterLength == clusterSize)
+
+    //If there's a next cluster, recursively scan that too
+    while(fileClusterHeader->next != 0)
     {
-        //If there's a next cluster, recursively scan that too
-        if(fileClusterHeader->next != 0)
-            objectCount += getFileSize(fileClusterHeader->next);
+        objectCount += getFileSize(fileClusterHeader->next);
     }
 
     //Add in the number of objects to the total
@@ -508,6 +505,7 @@ uint32_t getClusterFromFilepath(uint32_t rootDirectory, uint32_t currentDirector
     return currentDirectory;
 }
 
+
 int main()
 {
     std::cout << "\nPreparing RAM disk... ";
@@ -522,9 +520,9 @@ int main()
     uint8_t rootName[] = "root";
     uint32_t rootDirectory = createObject(NODE_DIRECTORY, 0, 4, rootName);
     uint32_t currentDirectory = rootDirectory;
-    for(uint32_t a = 0; a < 5000; a++)
+    for(uint32_t a = 0; a < 5; a++)
     {
-        std::string args = "Directory" + std::to_string(a);
+        std::string args = "dir" + std::to_string(a);
         uint32_t newObject = createObject(NODE_DIRECTORY, 0, args.size(), (uint8_t*)&args[0]);
         addObjectToDirectory(currentDirectory, newObject);
     }
