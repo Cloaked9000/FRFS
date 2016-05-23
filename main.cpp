@@ -46,6 +46,44 @@ const uint32_t clusterCount = (diskSize / clusterSize) - clusterCount;
 static uint8_t disk[diskSize];
 uint32_t lastAllocationPosition = 0;
 
+inline void write8(uint32_t index, uint32_t offset, uint8_t byte)
+{
+    disk[(index * clusterSize) + offset] = byte;
+}
+
+inline uint8_t read8(uint32_t index, uint32_t offset)
+{
+    return disk[(index * clusterSize) + offset];
+}
+
+inline void write16(uint32_t index, uint32_t offset, uint32_t data)
+{
+    uint64_t base = (index * clusterSize) + offset;
+    disk[base] = data;
+    disk[base + 1] = data >> 8;
+}
+
+inline uint32_t read16(uint32_t index, uint32_t offset)
+{
+    uint64_t base = (index * clusterSize) + offset;
+    return intConcat(disk[base], disk[base + 1]);
+}
+
+inline void write32(uint32_t index, uint32_t offset, uint32_t data)
+{
+    uint64_t base = (index * clusterSize) + offset;
+    disk[base] = data;
+    disk[base + 1] = data >> 8;
+    disk[base + 2] = data >> 16;
+    disk[base + 3] = data >> 24;
+}
+
+inline uint32_t read32(uint32_t index, uint32_t offset)
+{
+    uint64_t base = (index * clusterSize) + offset;
+    return intConcatL(disk[base], disk[base + 1], disk[base + 2], disk[base + 3]);
+}
+
 //Writes a cluster header
 void writeClusterHeader(uint32_t index, ClusterHeader *header)
 {
