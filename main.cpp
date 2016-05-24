@@ -499,14 +499,23 @@ void freeObject(uint32_t index)
     delete current;
 }
 
+struct FilepathClusterInfo
+{
+    uint32_t objectIndex; //Index of the object itself
+    uint32_t ownerIndex; //Index of the directory containing the object
+};
+
 //Converts a string filepath to a cluster index
-uint32_t getClusterFromFilepath(uint32_t rootDirectory, uint32_t currentDirectory, uint8_t *path, uint32_t pathLength)
+FilepathClusterInfo getClusterFromFilepath(uint32_t rootDirectory, uint32_t currentDirectory, uint8_t *path, uint32_t pathLength)
 {
     //Reset to root directory if filepath is preceded with a '/'
     if(path[0] == '/')
     {
         currentDirectory = rootDirectory;
     }
+
+    FilepathClusterInfo info;
+    uint32_t oldDirInfo = currentDirectory;
 
     char *token = strtok((char*)path, "/");
     while(token)
@@ -520,13 +529,16 @@ uint32_t getClusterFromFilepath(uint32_t rootDirectory, uint32_t currentDirector
             //If we've found a file match
             if(strcmp((char*)nodeData->nameData, token) == 0)
             {
+                oldDirInfo = currentDirectory;
                 currentDirectory = node;
                 //If 'currentDirectory' is a file, return
                 NodeHeader *h = readNodeHeader(currentDirectory);
                 if(h->type == NODE_FILE)
                 {
                     freeNodeHeader(h);
-                    return currentDirectory;
+                    info.objectIndex = currentDirectory;
+                    info.ownerIndex = oldDirInfo;
+                    return info;
                 }
                 freeNodeHeader(h);
             }
@@ -534,8 +546,9 @@ uint32_t getClusterFromFilepath(uint32_t rootDirectory, uint32_t currentDirector
         }
         token = strtok(NULL, "/");
     }
-
-    return currentDirectory;
+    info.objectIndex = currentDirectory;
+    info.ownerIndex = oldDirInfo;
+    return info;
 }
 
 
@@ -603,7 +616,7 @@ int main()
         else if(command == "cd")
         {
             std::cin >> args;
-            currentDirectory = getClusterFromFilepath(rootDirectory, currentDirectory, (uint8_t*)&args[0], args.size());
+            currentDirectory = getClusterFromFilepath(rootDirectory, currentDirectory, (uint8_t*)&args[0], args.size()).objectIndex;
         }
         else if(command == "touch")
         {
@@ -615,7 +628,7 @@ int main()
         else if(command == "tell")
         {
             std::cin >> args;
-            uint32_t file = getClusterFromFilepath(rootDirectory, currentDirectory, (uint8_t*)&args[0], args.size());
+            uint32_t file = getClusterFromFilepath(rootDirectory, currentDirectory, (uint8_t*)&args[0], args.size()).objectIndex;
             uint32_t fileSize = getFileSize(file);
             uint8_t *b = read(file, fileSize);
             for(uint32_t c = 0; c < fileSize; c++)
