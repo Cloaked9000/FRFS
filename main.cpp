@@ -40,7 +40,7 @@ struct ClusterHeader
     uint32_t next; //Index of next node in object
 };
 
-const uint64_t diskSize = 8192000; //10MB
+const uint64_t diskSize = 819200000; //10MB
 const uint16_t clusterSize = 4096;
 const uint32_t clusterCount = diskSize / clusterSize;
 static uint8_t disk[diskSize];
@@ -360,7 +360,7 @@ uint32_t getDirectorySize(uint32_t index)
 }
 
 //Get the number of bytes in a file (NOT a directory!)
-uint32_t getFileSize(uint32_t index)
+uint64_t getFileSize(uint32_t index)
 {
     uint32_t objectCount = 0;
 
@@ -545,7 +545,7 @@ int main()
     uint8_t rootName[] = "root";
     uint32_t rootDirectory = createObject(NODE_DIRECTORY, 0, 4, rootName);
     uint32_t currentDirectory = rootDirectory;
-    for(uint32_t a = 0; a < 1996; a++)
+    for(uint32_t a = 0; a < 19960; a++)
     {
         std::string args = "dir" + std::to_string(a);
         uint32_t newObject = createObject(NODE_DIRECTORY, 0, args.size(), (uint8_t*)&args[0]);
