@@ -24,6 +24,12 @@ struct NodeHeader
     uint8_t *nameData; //Array of characters containing name
 };
 
+struct ClusterHeader
+{
+    uint32_t clusterLength; //Actual length of node, is all of it being used?
+    uint32_t next; //Index of next node in object
+};
+
 inline uint16_t intConcat(uint8_t a, uint8_t b)
 {
     return (b << 8) | a;
@@ -34,12 +40,7 @@ inline uint32_t intConcatL(uint8_t a, uint8_t b, uint8_t c, uint8_t d)
     return (d << 24) | (c << 16) | (b << 8) | a;
 }
 
-struct ClusterHeader
-{
-    uint32_t clusterLength; //Actual length of node, is all of it being used?
-    uint32_t next; //Index of next node in object
-};
-
+#define HEADER_SIZE 280
 const uint64_t diskSize = 819200000; //10MB
 const uint16_t clusterSize = 4096;
 const uint32_t clusterCount = diskSize / clusterSize;
@@ -111,6 +112,13 @@ void writeNodeHeader(uint32_t index, NodeHeader *header)
         write8(index, 15 + a, header->nameData[a]);
 }
 
+//Delete all dynamically allocated NodeHeader memory
+inline void freeNodeHeader(NodeHeader *header)
+{
+    delete[] header->nameData;
+    delete header;
+}
+
 //Reads a cluster header
 ClusterHeader *readClusterHeader(uint32_t index)
 {
@@ -133,7 +141,7 @@ NodeHeader *readNodeHeader(uint32_t index)
     header->type = read8(index, 8); //Skip over cluster header
     header->permissions = read32(index, 9);
     header->nameLength = read16(index, 13);
-    header->nameData = new uint8_t[256];
+    header->nameData = new uint8_t[header->nameLength];
     for(uint16_t a = 0; a < header->nameLength; a++)
         header->nameData[a] = read8(index, 15 + a);
 
@@ -184,7 +192,7 @@ uint32_t createObject(uint8_t type, uint32_t permissions, uint16_t nameLength, u
 
     //Prepare cluster header for the new object
     ClusterHeader clusterHeader;
-    clusterHeader.clusterLength = 280; //24 bytes to take into account the cluster and node headers and 256 byte name limit
+    clusterHeader.clusterLength = HEADER_SIZE; //24 bytes to take into account the cluster and node headers and 256 byte name limit
     clusterHeader.next = 0;
 
     //Convert function arguments into a structure
@@ -205,9 +213,9 @@ uint32_t createObject(uint8_t type, uint32_t permissions, uint16_t nameLength, u
 uint32_t getDirectoryFileObject(uint32_t directoryIndex, uint32_t fileIndex)
 {
     //Figure out if the provided index is in the current cluster or another one
-    if(fileIndex > ((clusterSize - 280) / 4))
+    if(fileIndex > ((clusterSize - HEADER_SIZE) / 4))
     {
-        fileIndex -= ((clusterSize - 280) / 4);
+        fileIndex -= ((clusterSize - HEADER_SIZE) / 4);
         //Read directory header to find next cluster
         ClusterHeader *header = readClusterHeader(directoryIndex);
         if(header->next == 0)
@@ -223,7 +231,7 @@ uint32_t getDirectoryFileObject(uint32_t directoryIndex, uint32_t fileIndex)
     else
     {
         //Get the file index of the directory and combine the bytes into a single uint32_t
-        return read32(directoryIndex, 280 + (fileIndex * 4));
+        return read32(directoryIndex, HEADER_SIZE + (fileIndex * 4));
     }
     return 0;
 }
@@ -250,7 +258,7 @@ uint32_t extendCluster(uint32_t clusterIndex)
 
     //Setup the newly allocated cluster
     ClusterHeader clusterHeader;
-    clusterHeader.clusterLength = 280; //24 bytes to take into account the cluster and node headers and 256 byte name limit
+    clusterHeader.clusterLength = HEADER_SIZE; //24 bytes to take into account the cluster and node headers and 256 byte name limit
     clusterHeader.next = 0;
     writeClusterHeader(header->next, &clusterHeader);
 
@@ -300,11 +308,11 @@ uint8_t removeObjectFromDirectory(uint32_t directoryIndex, uint32_t objectIndex)
     //Fetch the directories' cluster header
     ClusterHeader *directoryClusterHeader = readClusterHeader(directoryIndex);
 
-    if(objectIndex > ((clusterSize - 280) / 4)) //If object reference in ANOTHER connected directory cluster
+    if(objectIndex > ((clusterSize - HEADER_SIZE) / 4)) //If object reference in ANOTHER connected directory cluster
     {
         if(directoryClusterHeader->next != 0)
         {
-            objectIndex -= ((clusterSize - 280) / 4);
+            objectIndex -= ((clusterSize - HEADER_SIZE) / 4);
             removeObjectFromDirectory(directoryClusterHeader->next, objectIndex);
         }
     }
@@ -313,7 +321,7 @@ uint8_t removeObjectFromDirectory(uint32_t directoryIndex, uint32_t objectIndex)
         //Calculate name offset in current cluster
 
         //Set it to 0 in directory
-        uint32_t relativeObjectIndex = 280 + (objectIndex*4);
+        uint32_t relativeObjectIndex = HEADER_SIZE + (objectIndex*4);
 
         //Shift all entries in the rest of the cluster down so as not to leave empty space in the cluster
         for(; relativeObjectIndex < (directoryIndex + clusterSize); relativeObjectIndex+=4)
@@ -351,7 +359,7 @@ uint32_t getDirectorySize(uint32_t index)
     }
 
     //Add in the number of objects to the total
-    objectCount += (directoryClusterHeader->clusterLength - 280) / 4;
+    objectCount += (directoryClusterHeader->clusterLength - HEADER_SIZE) / 4;
 
     //Cleanup
     delete directoryClusterHeader;
@@ -374,7 +382,7 @@ uint64_t getFileSize(uint32_t index)
     }
 
     //Add in the number of objects to the total
-    objectCount += (fileClusterHeader->clusterLength - 280);
+    objectCount += (fileClusterHeader->clusterLength - HEADER_SIZE);
 
     //Cleanup
     delete fileClusterHeader;
@@ -445,7 +453,7 @@ uint8_t *read(uint32_t clusterIndex, uint32_t length)
     while(bufferOffset < length)
     {
         //Read from cluster until either we've read enough bytes or we've finished this cluster
-        for(uint32_t a = 280; a < cluster->clusterLength && bufferOffset < length; a++)
+        for(uint32_t a = HEADER_SIZE; a < cluster->clusterLength && bufferOffset < length; a++)
         {
             buffer[bufferOffset++] = read8(clusterIndex, a);
         }
@@ -517,12 +525,12 @@ uint32_t getClusterFromFilepath(uint32_t rootDirectory, uint32_t currentDirector
                 NodeHeader *h = readNodeHeader(currentDirectory);
                 if(h->type == NODE_FILE)
                 {
-                    delete h;
+                    freeNodeHeader(h);
                     return currentDirectory;
                 }
-                delete h;
+                freeNodeHeader(h);
             }
-            delete nodeData;
+            freeNodeHeader(nodeData);
         }
         token = strtok(NULL, "/");
     }
@@ -576,7 +584,7 @@ int main()
                     removeObjectFromDirectory(currentDirectory, a);
                     freeObject(node);
                 }
-                delete nodeData;
+                freeNodeHeader(nodeData);
             }
         }
         else if(command == "ls")
@@ -589,7 +597,7 @@ int main()
                 for(uint16_t b = 0; b < nodeData->nameLength; b++)
                     std::cout << nodeData->nameData[b];
                 std::cout << std::endl;
-                delete nodeData;
+                freeNodeHeader(nodeData);
             }
         }
         else if(command == "cd")
