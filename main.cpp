@@ -324,7 +324,7 @@ uint8_t removeObjectFromDirectory(uint32_t directoryIndex, uint32_t objectIndex)
         uint32_t relativeObjectIndex = HEADER_SIZE + (objectIndex*4);
 
         //Shift all entries in the rest of the cluster down so as not to leave empty space in the cluster
-        for(; relativeObjectIndex < (directoryIndex + clusterSize); relativeObjectIndex+=4)
+        for(; relativeObjectIndex < clusterSize; relativeObjectIndex+=4)
         {
             write8(directoryIndex, relativeObjectIndex, read8(directoryIndex, relativeObjectIndex + 4));
             write8(directoryIndex, relativeObjectIndex + 1, read8(directoryIndex, relativeObjectIndex + 5));
@@ -554,7 +554,7 @@ FilepathClusterInfo getClusterFromFilepath(uint32_t rootDirectory, uint32_t curr
 
 int main()
 {
-    std::cout << "\nPreparing RAM disk... ";
+    std::cout << "\nPreparing FAM disk... ";
     //Install filesystem to ramdisk
     formatDisk();
     std::cout << "Done. " << std::endl;
@@ -566,7 +566,7 @@ int main()
     uint8_t rootName[] = "root";
     uint32_t rootDirectory = createObject(NODE_DIRECTORY, 0, 4, rootName);
     uint32_t currentDirectory = rootDirectory;
-    for(uint32_t a = 0; a < 19960; a++)
+    for(uint32_t a = 0; a < 5; a++)
     {
         std::string args = "dir" + std::to_string(a);
         uint32_t newObject = createObject(NODE_DIRECTORY, 0, args.size(), (uint8_t*)&args[0]);
@@ -621,8 +621,19 @@ int main()
         else if(command == "touch")
         {
             std::cin >> args >> args2;
-            uint32_t obj = createObject(NODE_FILE, 0, args.size(), (uint8_t*)&args[0]);
-            addObjectToDirectory(currentDirectory, obj);
+            char *last = strrchr(&args[0], '/');
+            uint32_t obj = 0;
+            if(last != NULL)
+            {
+                obj = createObject(NODE_FILE, 0, args.size(), (uint8_t*)last+1);
+                uint32_t file = getClusterFromFilepath(rootDirectory, currentDirectory, (uint8_t*)&args[0], args.size()).objectIndex;
+                addObjectToDirectory(file, obj);
+            }
+            else
+            {
+                obj = createObject(NODE_FILE, 0, args.size(), (uint8_t*)&args[0]);
+                addObjectToDirectory(currentDirectory, obj);
+            }
             write(obj, (uint8_t*)&args2[0], args2.size());
         }
         else if(command == "tell")
