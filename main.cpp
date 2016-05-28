@@ -41,40 +41,40 @@ inline uint32_t intConcatL(uint8_t a, uint8_t b, uint8_t c, uint8_t d)
 }
 
 #define HEADER_SIZE (uint16_t)280 //16 bytes to take into account the cluster and node headers and 264 byte name limit
-#define CLUSTER_HEADER_SIZE (uint8_t)4 //Length and next
+#define CLUSTER_HEADER_SIZE (uint8_t)8 //Reserved number of bytes at the start of each cluster
 #define DIRECTORY_ENTRY_SIZE (uint8_t)4 //Each directory entry is 4 bytes
 const uint64_t diskSize = 819200000; //800MB
-const uint16_t clusterSize = 512;
-const uint32_t clusterCount = diskSize / clusterSize;
+const uint16_t CLUSTER_SIZE = 4096;
+const uint32_t clusterCount = diskSize / CLUSTER_SIZE;
 static uint8_t disk[diskSize];
-uint32_t lastAllocationPosition = (clusterCount/clusterSize)+1;
+uint32_t lastAllocationPosition = (clusterCount/CLUSTER_SIZE)+1;
 
 inline void write8(uint32_t index, uint32_t offset, uint8_t byte)
 {
-    disk[(index * clusterSize) + offset] = byte;
+    disk[(index * CLUSTER_SIZE) + offset] = byte;
 }
 
 inline uint8_t read8(uint32_t index, uint32_t offset)
 {
-    return disk[(index * clusterSize) + offset];
+    return disk[(index * CLUSTER_SIZE) + offset];
 }
 
 inline void write16(uint32_t index, uint32_t offset, uint32_t data)
 {
-    uint64_t base = (index * clusterSize) + offset;
+    uint64_t base = (index * CLUSTER_SIZE) + offset;
     disk[base] = data;
     disk[base + 1] = data >> 8;
 }
 
 inline uint32_t read16(uint32_t index, uint32_t offset)
 {
-    uint64_t base = (index * clusterSize) + offset;
+    uint64_t base = (index * CLUSTER_SIZE) + offset;
     return intConcat(disk[base], disk[base + 1]);
 }
 
 inline void write32(uint32_t index, uint32_t offset, uint32_t data)
 {
-    uint64_t base = (index * clusterSize) + offset;
+    uint64_t base = (index * CLUSTER_SIZE) + offset;
     disk[base] = data;
     disk[base + 1] = data >> 8;
     disk[base + 2] = data >> 16;
@@ -83,7 +83,7 @@ inline void write32(uint32_t index, uint32_t offset, uint32_t data)
 
 inline uint32_t read32(uint32_t index, uint32_t offset)
 {
-    uint64_t base = (index * clusterSize) + offset;
+    uint64_t base = (index * CLUSTER_SIZE) + offset;
     return intConcatL(disk[base], disk[base + 1], disk[base + 2], disk[base + 3]);
 }
 
@@ -211,32 +211,43 @@ uint32_t createObject(uint8_t type, uint32_t permissions, uint16_t nameLength, u
     return cluster; //Return the index of the newly created cluster
 }
 
-//Returns cluster location of an object, the index is relative to the directory NOT the disk
-uint32_t getDirectoryFileObject(uint32_t directoryIndex, uint32_t fileIndex, uint32_t depth = 1)
+uint8_t getDirectoryClusterFromObjectIndex(uint32_t *directoryIndex, uint32_t *objectIndex, uint32_t *clusterSize) //These long names are killing me
 {
-    uint16_t headerOffset = (depth == 1) ? HEADER_SIZE : CLUSTER_HEADER_SIZE;
-    //Figure out if the provided index is in the current cluster or another one
-    if(fileIndex > ((clusterSize - headerOffset) / DIRECTORY_ENTRY_SIZE))
+    //Find the cluster which the object index is stored in within the directory
+    *clusterSize = HEADER_SIZE;
+    ClusterHeader *directoryHeader = readClusterHeader(*directoryIndex);
+    while(*clusterSize + (*objectIndex * DIRECTORY_ENTRY_SIZE) >= directoryHeader->clusterLength) //Keep going until the index is within the current cluster
     {
-        fileIndex -= ((clusterSize - headerOffset) / DIRECTORY_ENTRY_SIZE);
-        //Read directory header to find next cluster
-        ClusterHeader *header = readClusterHeader(directoryIndex);
-        if(header->next == 0)
+        if(directoryHeader->next == 0) //If there's no next cluster, index out of range, return 0.
         {
+            delete directoryHeader;
             return 0;
-            delete header;
         }
+        //Else move onto next cluster within the directory
+        *directoryIndex = directoryHeader->next;
 
-        uint32_t fileCount = getDirectoryFileObject(header->next, fileIndex, ++depth);
-        delete header;
-        return fileCount;
+        //Reduce the objectIndex by the total storable within a directory as that's how many we've skipepd over
+        *objectIndex -= (directoryHeader->clusterLength - *clusterSize) / DIRECTORY_ENTRY_SIZE;
+        *clusterSize = CLUSTER_HEADER_SIZE;
+
+        delete directoryHeader;
+        directoryHeader = readClusterHeader(*directoryIndex);
     }
-    else
-    {
-        //Get the file index of the directory and combine the bytes into a single uint32_t
-        return read32(directoryIndex, headerOffset + (fileIndex * DIRECTORY_ENTRY_SIZE));
-    }
-    return 0;
+    delete directoryHeader;
+    return 1;
+}
+
+
+//Returns cluster location of an object, the index is relative to the directory NOT the disk
+uint32_t getDirectoryObject(uint32_t directoryIndex, uint32_t objectIndex)
+{
+    //Get which cluster of the directory the object is in
+    uint32_t clusterHeaderSize;
+    if(getDirectoryClusterFromObjectIndex(&directoryIndex, &objectIndex, &clusterHeaderSize) == 0)
+        return 0;
+
+    //Get the file index of the directory and combine the bytes into a single uint32_t
+    return read32(directoryIndex, clusterHeaderSize + (objectIndex * DIRECTORY_ENTRY_SIZE));
 }
 
 
@@ -278,7 +289,7 @@ void addObjectToDirectory(uint32_t directoryIndex, uint32_t objectIndex)
 {
     //Fetch the directories' cluster header
     ClusterHeader *directoryClusterHeader = readClusterHeader(directoryIndex);
-    if(directoryClusterHeader->clusterLength == clusterSize)
+    if(directoryClusterHeader->clusterLength == CLUSTER_SIZE)
     {
         //Cluster full, expand the directory!
         if(directoryClusterHeader->next == 0)
@@ -306,46 +317,34 @@ void addObjectToDirectory(uint32_t directoryIndex, uint32_t objectIndex)
 }
 
 //Remove an object from a directory. Note: Wont free object, will just unlist from THIS directory
-uint8_t removeObjectFromDirectory(uint32_t directoryIndex, uint32_t objectIndex, uint32_t depth = 1)
+uint8_t removeObjectFromDirectory(uint32_t directoryIndex, uint32_t objectIndex)
 {
-    uint16_t headerOffset = (depth == 1) ? HEADER_SIZE : CLUSTER_HEADER_SIZE;
-    //Fetch the directories' cluster header
+    //Get which cluster of the directory the object is in
+    uint32_t clusterHeaderSize;
+    if(getDirectoryClusterFromObjectIndex(&directoryIndex, &objectIndex, &clusterHeaderSize) == 0)
+        return 0;
+
+    //Calculate name offset in current cluster
+    //Set it to 0 in directory
+    uint32_t relativeObjectIndex = clusterHeaderSize + (objectIndex*DIRECTORY_ENTRY_SIZE);
+
+    //Shift all entries in the rest of the cluster down so as not to leave empty space in the cluster
+    for(; relativeObjectIndex < CLUSTER_SIZE; relativeObjectIndex+=DIRECTORY_ENTRY_SIZE)
+    {
+        for(uint32_t a = 0; a < DIRECTORY_ENTRY_SIZE; a++) //Shift each byte in the entry
+        {
+            write8(directoryIndex, relativeObjectIndex + a, read8(directoryIndex, relativeObjectIndex + DIRECTORY_ENTRY_SIZE + a));
+        }
+    }
+
+    //Reduce header size and update on disk
     ClusterHeader *directoryClusterHeader = readClusterHeader(directoryIndex);
+    directoryClusterHeader->clusterLength -= DIRECTORY_ENTRY_SIZE;
+    writeClusterHeader(directoryIndex, directoryClusterHeader);
 
-    if(objectIndex > ((clusterSize - headerOffset) / DIRECTORY_ENTRY_SIZE)) //If object reference in ANOTHER connected directory cluster
-    {
-        if(directoryClusterHeader->next != 0)
-        {
-            objectIndex -= ((clusterSize - headerOffset) / DIRECTORY_ENTRY_SIZE);
-            removeObjectFromDirectory(directoryClusterHeader->next, objectIndex, ++depth);
-        }
-    }
-    else //If object reference is in current cluster
-    {
-        //Calculate name offset in current cluster
-
-        //Set it to 0 in directory
-        uint32_t relativeObjectIndex = headerOffset + (objectIndex*DIRECTORY_ENTRY_SIZE);
-
-        //Shift all entries in the rest of the cluster down so as not to leave empty space in the cluster
-        for(; relativeObjectIndex < clusterSize; relativeObjectIndex+=DIRECTORY_ENTRY_SIZE)
-        {
-            for(uint32_t a = 0; a < DIRECTORY_ENTRY_SIZE; a++) //Shift each byte in the entry
-            {
-                write8(directoryIndex, relativeObjectIndex + a, read8(directoryIndex, relativeObjectIndex + DIRECTORY_ENTRY_SIZE + a));
-            }
-        }
-
-        //Reduce header size and update on disk
-        directoryClusterHeader->clusterLength -= DIRECTORY_ENTRY_SIZE;
-        writeClusterHeader(directoryIndex, directoryClusterHeader);
-
-        //Cleanup and return success
-        delete directoryClusterHeader;
-        return 1;
-    }
+    //Cleanup and return success
     delete directoryClusterHeader;
-    return 0;
+    return 1;
 }
 
 //Get the number of objects in a directory
@@ -373,27 +372,18 @@ uint32_t getDirectorySize(uint32_t index, uint32_t depth = 1)
 }
 
 //Get the number of bytes in a file (NOT a directory!)
-uint64_t getFileSize(uint32_t index, uint32_t depth = 1)
+uint64_t getFileSize(uint32_t index)
 {
-    uint32_t objectCount = 0;
-
-    //Fetch the files cluster header
-    ClusterHeader *fileClusterHeader = readClusterHeader(index);
-
-    //Add in the number of objects to the total
-    uint16_t headerOffset = (depth == 1) ? HEADER_SIZE : CLUSTER_HEADER_SIZE;
-    objectCount += (fileClusterHeader->clusterLength - headerOffset);
-
-    //If there's a next cluster, recursively scan that too
-    while(fileClusterHeader->next != 0)
+    uint64_t objSize = 0;
+    uint32_t headerSize = HEADER_SIZE;
+    ClusterHeader *header = readClusterHeader(index);
+    do
     {
-        objectCount += getFileSize(fileClusterHeader->next, ++depth);
-    }
-
-    //Cleanup
-    delete fileClusterHeader;
-
-    return objectCount;
+        objSize += header->clusterLength - headerSize;
+        headerSize = CLUSTER_HEADER_SIZE;
+        delete header;
+    } while(header->next != 0);
+    return objSize;
 }
 
 //Follows a cluster list until we reach the final one
@@ -425,7 +415,7 @@ void write(uint32_t clusterIndex, uint8_t *data, uint32_t dataLength)
     for(uint32_t a = 0; a < dataLength; a++)
     {
         //TODO: Optimise so that an if isn't needed every byte, calculate how many we can write in one go then use a for loop to that point and THEN allocate more if needed
-        if(cluster->clusterLength == clusterSize) //If this cluster is full, create a new one
+        if(cluster->clusterLength == CLUSTER_SIZE) //If this cluster is full, create a new one
         {
             //Update saved size for cluster first
             writeClusterHeader(clusterIndex, cluster);
@@ -481,7 +471,6 @@ uint8_t *read(uint32_t clusterIndex, uint32_t length)
 
     //Cleanup
     delete cluster;
-
     //Return read data
     return buffer;
 }
@@ -533,7 +522,7 @@ FilepathClusterInfo getClusterFromFilepath(uint32_t rootDirectory, uint32_t curr
         uint32_t dirSize = getDirectorySize(currentDirectory);
         for(uint32_t a = 0; a < dirSize; a++)
         {
-            uint32_t node = getDirectoryFileObject(currentDirectory, a);
+            uint32_t node = getDirectoryObject(currentDirectory, a);
             NodeHeader *nodeData = readNodeHeader(node);
             //If we've found a file match
             if(strcmp((char*)nodeData->nameData, token) == 0)
@@ -568,14 +557,14 @@ int main()
     formatDisk();
     std::cout << "Done. " << std::endl;
     std::cout << "Disk size: " << diskSize
-              << "\nCluster size: " << clusterSize
-              << "\nUsable disk space: " << diskSize-(clusterSize * 4) << std::endl;
+              << "\nCluster size: " << CLUSTER_SIZE
+              << "\nUsable disk space: " << diskSize-(CLUSTER_SIZE * 4) << std::endl;
 
 
     uint8_t rootName[] = "root";
     uint32_t rootDirectory = createObject(NODE_DIRECTORY, 0, 4, rootName);
     uint32_t currentDirectory = rootDirectory;
-    for(uint32_t a = 0; a < 100000; a++)
+    for(uint32_t a = 0; a < 5; a++)
     {
         std::string args = "dir" + std::to_string(a);
         uint32_t newObject = createObject(NODE_DIRECTORY, 0, args.size(), (uint8_t*)&args[0]);
@@ -599,7 +588,7 @@ int main()
             uint32_t dirSize = getDirectorySize(currentDirectory);
             for(uint32_t a = 0; a < dirSize; a++)
             {
-                uint32_t node = getDirectoryFileObject(currentDirectory, a);
+                uint32_t node = getDirectoryObject(currentDirectory, a);
                 NodeHeader *nodeData = readNodeHeader(node);
                 if(strcmp(&args[0], (char*)nodeData->nameData) == 0)
                 {
@@ -614,7 +603,7 @@ int main()
             uint32_t dirSize = getDirectorySize(currentDirectory);
             for(uint32_t a = 0; a < dirSize; a++)
             {
-                uint32_t node = getDirectoryFileObject(currentDirectory, a);
+                uint32_t node = getDirectoryObject(currentDirectory, a);
                 NodeHeader *nodeData = readNodeHeader(node);
                 for(uint16_t b = 0; b < nodeData->nameLength; b++)
                     std::cout << nodeData->nameData[b];
@@ -630,6 +619,15 @@ int main()
         else if(command == "touch")
         {
             std::cin >> args >> args2;
+            uint32_t doesExist = getClusterFromFilepath(rootDirectory, currentDirectory, (uint8_t*)&args[0], args.size()).objectIndex;
+            if(doesExist != currentDirectory)
+            {
+                std::cout << args << " already exists" << std::endl;
+                continue;
+            }
+
+            std::cout << "\nTOUCH" << std::endl;
+
             char *last = strrchr(&args[0], '/');
             uint32_t obj = 0;
             if(last != NULL)
@@ -645,10 +643,22 @@ int main()
             }
             write(obj, (uint8_t*)&args2[0], args2.size());
         }
-        else if(command == "tell")
+        else if(command == "less")
         {
             std::cin >> args;
             uint32_t file = getClusterFromFilepath(rootDirectory, currentDirectory, (uint8_t*)&args[0], args.size()).objectIndex;
+            if(file == currentDirectory)
+            {
+                std::cout << args << " not found" << std::endl;
+                continue;
+            }
+            NodeHeader *node = readNodeHeader(file);
+            if(node->type != NODE_FILE)
+            {
+                std::cout << args << " is not a file" << std::endl;
+                continue;
+            }
+            delete node;
             uint32_t fileSize = getFileSize(file);
             uint8_t *b = read(file, fileSize);
             for(uint32_t c = 0; c < fileSize; c++)
