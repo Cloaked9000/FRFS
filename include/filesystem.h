@@ -134,4 +134,13 @@ inline uint32_t fs_getDirectorySize(uint32_t index)
 {
     return fs_getFileSize(index) / DIRECTORY_ENTRY_SIZE;
 }
+
+//Create a new directory and insert parent object
+inline uint32_t fs_createDirectory(uint32_t parent, uint32_t permissions, uint16_t nameLength, uint8_t *name)
+{
+    uint32_t obj = fs_createObject(NODE_DIRECTORY, permissions, nameLength, name);
+    fs_addObjectToDirectory(obj, parent);
+    return obj;
+}
+
 #endif // FILESYSTEM_H

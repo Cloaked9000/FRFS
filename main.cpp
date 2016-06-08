@@ -38,10 +38,10 @@ void packStructure(const std::string &filepath, uint32_t rootDirectory)
         std::string strName = pent->d_name;
         if(strName == ".." || strName == ".")
             continue;
-        if(isDirectory(filepath + "/" + strName))
+        if(isDirectory(filepath + "/" + strName)) //If object is directory
         {
             //Add object to disk
-            uint32_t newFile = fs_createObject(NODE_DIRECTORY, 0, strName.size(), (uint8_t*)strName.c_str());
+            uint32_t newFile = fs_createDirectory(rootDirectory, 0, strName.size(), (uint8_t*)strName.c_str());
 
             //Add to current directory
             fs_addObjectToDirectory(rootDirectory, newFile);
@@ -49,7 +49,7 @@ void packStructure(const std::string &filepath, uint32_t rootDirectory)
             //Now recursively search this directory, passing root as the newly created directory
             packStructure(filepath + "/" + strName, newFile);
         }
-        else
+        else //Else if object is file
         {
             //Add object to disk
             uint32_t newFile = fs_createObject(NODE_FILE, 0, strName.size(), (uint8_t*)strName.c_str());
@@ -100,6 +100,7 @@ int main()
 
     uint8_t rootName[] = "root";
     uint32_t rootDirectory = fs_createObject(NODE_DIRECTORY, 0, 4, rootName);
+    fs_addObjectToDirectory(rootDirectory, rootDirectory);
     uint32_t currentDirectory = rootDirectory;
 
     packStructure(".", rootDirectory);
@@ -111,7 +112,7 @@ int main()
     char *arr = (char*)fs_getDisk();
     file.write(&arr[0], sz);
     file.close();
-    return 0;
+   // return 0;
 
     while(true)
     {
@@ -122,8 +123,7 @@ int main()
         if(command == "mkdir")
         {
             std::cin >> args;
-            uint32_t newObject = fs_createObject(NODE_DIRECTORY, 0, args.size(), (uint8_t*)&args[0]);
-            fs_addObjectToDirectory(currentDirectory, newObject);
+            fs_createDirectory(currentDirectory, 0, args.size(), (uint8_t*)&args[0]);
         }
         else if(command == "rm")
         {
@@ -139,7 +139,8 @@ int main()
         else if(command == "ls")
         {
             uint32_t dirSize = fs_getDirectorySize(currentDirectory);
-            for(uint32_t a = 0; a < dirSize; a++)
+            std::cout << ".." << std::endl;
+            for(uint32_t a = 1; a < dirSize; a++)
             {
                 uint32_t node = fs_getDirectoryObject(currentDirectory, a);
                 NodeHeader *nodeData = fs_readNodeHeader(node);

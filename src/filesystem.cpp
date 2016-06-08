@@ -427,9 +427,18 @@ FilepathClusterInfo fs_getClusterFromFilepath(uint32_t rootDirectory, uint32_t c
     char *token = strtok((char*)path, "/");
     while(token)
     {
+        if(strcmp(token, "..") == 0)
+        {
+            info.relativeIndex = 0;
+            oldDirInfo = currentDirectory;
+            currentDirectory = fs_getDirectoryObject(currentDirectory, 0);
+            token = strtok(NULL, "/");
+            continue;
+        }
+
         //Get list of files in current directory and check if this name matches any of them
         uint32_t dirSize = fs_getDirectorySize(currentDirectory);
-        for(uint32_t a = 0; a < dirSize; a++)
+        for(uint32_t a = 1; a < dirSize; a++)
         {
             uint32_t node = fs_getDirectoryObject(currentDirectory, a);
             NodeHeader *nodeData = fs_readNodeHeader(node);
